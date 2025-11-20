@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON SNIPER ELITE</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #050505; font-family: 'Consolas', monospace; user-select: none; }
+        
+        /* HUD - Heads Up Display */
+        #hud {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 5;
+            display: flex; flex-direction: column; justify-content: space-between;
+        }
+        .hud-row { padding: 20px 30px; display: flex; justify-content: space-between; }
+        .hud-text { color: #0ff; font-size: 24px; text-shadow: 0 0 8px rgba(0, 255, 255, 0.6); font-weight: bold; letter-spacing: 2px; }
+        .hud-warn { color: #f0f; font-size: 28px; text-shadow: 0 0 8px rgba(255, 0, 255, 0.6); }
+        
+        /* Reticle */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 20px; height: 20px;
+            transform: translate(-50%, -50%);
+        }
+        #crosshair::before { content: ''; position: absolute; top: 9px; left: 0; width: 20px; height: 2px; background: rgba(255,255,255,0.8); }
+        #crosshair::after { content: ''; position: absolute; top: 0; left: 9px; width: 2px; height: 20px; background: rgba(255,255,255,0.8); }
+
+        /* Hit Marker */
+        #hitmarker {
+            position: absolute; top: 50%; left: 50%; width: 30px; height: 30px;
+            border: 2px solid #ff0055; border-radius: 50%;
+            transform: translate(-50%, -50%) scale(0.5); opacity: 0;
+            transition: transform 0.1s, opacity 0.1s; pointer-events: none;
+        }
+        
+        /* Screens */
+        #blocker, #error-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: white; z-index: 10; cursor: pointer; text-align: center;
+        }
+        #error-screen { display: none; background: #200; cursor: default; z-index: 20; }
+        
+        h1 { font-size: 4em; margin: 0; color: #0ff; text-shadow: 0 0 20px #0ff; text-transform: uppercase; letter-spacing: 5px; }
+        p { font-size: 1.2em; color: #aaa; margin-top: 15px; line-height: 1.5; }
+        .blink { animation: blinker 1.5s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0; } }
+    </style>
+</head>
+<body>
+
+    <!-- HUD -->
+    <div id="hud">
+        <div class="hud-row">
+            <div class="hud-text">SCORE: <span id="score">0</span></div>
+            <div class="hud-text">TARGET: <span id="dist">15m</span></div>
+        </div>
+        <div id="crosshair"></div>
+        <div id="hitmarker"></div>
+        <div class="hud-row" style="justify-content: flex-end;">
+            <div class="hud-warn">AMMO: <span id="ammo">12</span> / 12</div>
+        </div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="blocker">
+        <div>
+            <h1>SYSTEM READY</h1>
+            <p class="blink">CLICK ANYWHERE TO ENGAGE</p>
+            <p style="font-size: 14px; color: #666; margin-top: 30px;">[MOUSE] Aim &nbsp; [L-CLICK] Fire &nbsp; [R] Reload</p>
+        </div>
+    </div>
+
+    <!-- Error Screen (Shows if opened locally) -->
+    <div id="error-screen">
+        <h1 style="color: #ff4444;">SYSTEM ERROR</h1>
+        <p>Browser Security Blocked the Game Engine.</p>
+        <p><strong>DO NOT</strong> open this file by double-clicking it.</p>
+        <p>You <strong>MUST</strong> host it on a server (like Vercel) for the 3D code to run.</p>
+    </div>
+
+    <!-- The Game Engine -->
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+        import { PointerLockControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/PointerLockControls.js';
+
+        // --- 1. SETUP & ERROR HANDLING ---
+        const blocker = document.getElementById('blocker');
+        const errorScreen = document.getElementById('error-screen');
+        
+        // If Three.js fails to load, this block won't run, but the module system catches basic CORS errors.
+        window.onerror = function() {
+            errorScreen.style.display = 'flex';
+            blocker.style.display = 'none';
+        };
+
+        // --- 2. AUDIO SYNTHESIZER (No downloads needed) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        function playTone(freq, type, duration, vol=0.1) {
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function sfxShoot() { 
+            playTone(800, 'sawtooth', 0.1, 0.1); 
+            playTone(150, 'square', 0.2, 0.1); // Bass kick
+        }
+        function sfxHit() { playTone(2000, 'sine', 0.1, 0.2); }
+        function sfxEmpty() { playTone(200, 'square', 0.05, 0.05); }
+        function sfxReload() { playTone(600, 'triangle', 0.4, 0.05); }
+
+        // --- 3. SCENE INIT ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0a10);
+        scene.fog = new THREE.Fog(0x0a0a10, 10, 60);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Optimization
+        document.body.appendChild(renderer.domElement);
+
+        // Environment
+        const grid = new THREE.GridHelper(200, 100, 0x00ffff, 0x111111);
+        grid.position.y = -2;
+        scene.add(grid);
+
+        const light = new THREE.PointLight(0xffffff, 1, 100);
+        light.position.set(0, 5, 5);
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0x404040));
+
+        // --- 4. PLAYER & GUN ---
+        const controls = new PointerLockControls(camera, document.body);
+        camera.position.y = 0; 
+
+        // Gun Model
+        const gun = new THREE.Group();
+        camera.add(gun);
+        gun.position.set(0.4, -0.4, -0.8);
+
+        const gunBody = new THREE.Mesh(
+            new THREE.BoxGeometry(0.15, 0.2, 0.6), 
+            new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.4 })
+        );
+        gun.add(gunBody);
+        
+        const barrel = new THREE.Mesh(
+            new THREE.BoxGeometry(0.05, 0.05, 0.8),
+            new THREE.MeshBasicMaterial({ color: 0x00ffff })
+        );
+        barrel.position.y = 0.15;
+        gun.add(barrel);
+
+        // Muzzle Flash
+        const flash = new THREE.PointLight(0x00ffff, 0, 3);
+        flash.position.set(0, 0.2, -0.6);
+        gun.add(flash);
+
+        scene.add(controls.getObject());
+
+        // --- 5. GAME LOGIC ---
+        let score = 0;
+        let distance = 10;
+        let ammo = 12;
+        let isReloading = false;
+
+        // Target
+        const targetGeo = new THREE.OctahedronGeometry(1, 0);
+        const targetMat = new THREE.MeshStandardMaterial({ 
+            color: 0xff0055, emissive: 0x440022, roughness: 0.1 
+        });
+        const target = new THREE.Mesh(targetGeo, targetMat);
+        target.position.set(0, 0, -distance);
+        scene.add(target);
+
+        // Particles
+        const particles = [];
+        const debrisGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+        const debrisMat = new THREE.MeshBasicMaterial({ color: 0xff0055 });
+
+        function spawnDebris(pos) {
+            for(let i=0; i<8; i++) {
+                const mesh = new THREE.Mesh(debrisGeo, debrisMat);
+                mesh.position.copy(pos);
+                const vel = new THREE.Vector3((Math.random()-0.5)*5, (Math.random()-0.5)*5, (Math.random()-0.5)*5);
+                scene.add(mesh);
+                particles.push({ mesh, vel, life: 1.0 });
+            }
+        }
+
+        // Shooting
+        const raycaster = new THREE.Raycaster();
+        
+        function fire() {
+            if(isReloading) return;
+            if(ammo <= 0) { sfxEmpty(); return; }
+
+            ammo--;
+            updateHUD();
+            sfxShoot();
+
+            // Recoil
+            gun.position.z += 0.2;
+            gun.rotation.x += 0.1;
+            flash.intensity = 2;
+
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            const hits = raycaster.intersectObject(target);
+
+            if(hits.length > 0) {
+                // HIT
+                score += 50 + distance;
+                distance += 5;
+                sfxHit();
+                spawnDebris(target.position);
+                
+                // Marker Animation
+                const hm = document.getElementById('hitmarker');
+                hm.style.opacity = 1;
+                hm.style.transform = 'translate(-50%, -50%) scale(1.2)';
+                setTimeout(() => {
+                    hm.style.opacity = 0;
+                    hm.style.transform = 'translate(-50%, -50%) scale(0.5)';
+                }, 150);
+
+                // Move Target
+                target.position.z = -distance;
+                target.position.x = (Math.random() - 0.5) * (distance / 2);
+                target.position.y = (Math.random() - 0.5) * 5;
+            }
+            updateHUD();
+        }
+
+        function reload() {
+            if(isReloading || ammo === 12) return;
+            isReloading = true;
+            sfxReload();
+            
+            // Animation
+            const initialRot = gun.rotation.x;
+            gun.rotation.x = -Math.PI/4; // Tilt up
+            
+            setTimeout(() => {
+                ammo = 12;
+                isReloading = false;
+                gun.rotation.x = initialRot;
+                updateHUD();
+            }, 800);
+        }
+
+        // Input Handling
+        document.addEventListener('mousedown', () => {
+            if(controls.isLocked) fire();
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if(e.code === 'KeyR') reload();
+        });
+
+        // --- CRITICAL FIX: CLICK HANDLER ---
+        blocker.addEventListener('click', () => {
+            // 1. Resume Audio Context (must be done on click)
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            
+            // 2. Lock Pointer
+            controls.lock();
+        });
+
+        controls.addEventListener('lock', () => {
+            blocker.style.display = 'none';
+        });
+        
+        controls.addEventListener('unlock', () => {
+            blocker.style.display = 'flex';
+            document.querySelector('#blocker h1').innerText = "PAUSED";
+            document.querySelector('#blocker .blink').innerText = "CLICK TO RESUME";
+        });
+
+        function updateHUD() {
+            document.getElementById('score').innerText = score;
+            document.getElementById('dist').innerText = distance + "m";
+            const ammoEl = document.getElementById('ammo');
+            ammoEl.innerText = ammo;
+            ammoEl.style.color = ammo === 0 ? '#ff0000' : '#ff00ff';
+        }
+
+        // --- 6. ANIMATION LOOP ---
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = clock.getDelta();
+
+            // Target Float
+            target.rotation.x += dt;
+            target.rotation.y += dt;
+
+            // Gun Reset
+            gun.position.z = THREE.MathUtils.lerp(gun.position.z, -0.8, dt * 10);
+            gun.rotation.x = THREE.MathUtils.lerp(gun.rotation.x, 0, dt * 10);
+            flash.intensity = THREE.MathUtils.lerp(flash.intensity, 0, dt * 20);
+
+            // Particles
+            for(let i=particles.length-1; i>=0; i--) {
+                const p = particles[i];
+                p.life -= dt;
+                p.mesh.position.addScaledVector(p.vel, dt);
+                p.mesh.rotation.z += dt * 5;
+                p.mesh.scale.setScalar(p.life);
+                if(p.life <= 0) {
+                    scene.remove(p.mesh);
+                    particles.splice(i,1);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+        
+        // Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
